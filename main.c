@@ -86,9 +86,23 @@ void event_connect (irc_session_t * session, const char * event, const char * or
 
 	irc_ctx_t * ctx = (irc_ctx_t *) irc_get_ctx (session);
 
-	printf("Doing connect commands. (TODO)\n");
-	//TODO irc_cmd_msg(session, nick, text);
+	// Send commands
+	int cmd_idx;
+	for (cmd_idx = 0; cmd_idx < server_conf_get_cmds_count(ctx->server_conf); cmd_idx++) {
+		cmd_conf_t * cmd_conf = server_conf_get_cmd_at(ctx->server_conf, cmd_idx);
+		const char* cmd_name = cmd_conf_get_name(cmd_conf);
+		const char* cmd_arg1 = cmd_conf_get_arg1(cmd_conf);
+		const char* cmd_arg2 = cmd_conf_get_arg2(cmd_conf);
 
+		if (!strcmp(cmd_name, "msg")) {
+			printf("Sending msg to %s\n", cmd_arg1);
+			irc_cmd_msg(session, cmd_arg1, cmd_arg2);
+		} else {
+			fprintf(stderr, "WARN: unsupported command %s\n", cmd_name);
+		}
+	}
+
+	// Join channels
 	int chan_idx;
 	for (chan_idx = 0; chan_idx < server_conf_get_channels_count(ctx->server_conf); chan_idx++) {
 		channel_conf_t * channel_conf = server_conf_get_channel_at(ctx->server_conf, chan_idx);
