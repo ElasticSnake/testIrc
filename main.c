@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <signal.h>
 
 #include <regex.h>
 
@@ -12,67 +13,43 @@
 
 #include <jansson.h>
 
-/*
- * servers/server/@{ip,port,nick,password}
- *               /connect-cmds/cmd
- *               /channels/channel/name,password,nickfilter
- */
-
-/*
-
-{
-	"servers": [
-	{
-		"name": "freenode",
-		"ip": "chat.freenode.net",
-		"port": 6667,
-		"nick": "bot",
-		"cmds": [
-		{
-			"cmd": "msg",
-			"arg1": "NickServ",
-			"arg2": "IDENTIFY pass"
-		}
-		]
-		"channels": [
-		{
-			"name": "#ubuntu",
-			"nickfilter": ".*"
-		}
-		]
-	}
-	]
-}
+#include "conf.h"
 
 
- */
+// -----------------------------------------------------------------------------------------------
+// global
+sig_atomic_t g_askedToStop = 0;
+
+// -----------------------------------------------------------------------------------------------
+
 typedef enum {
 	STATE_UNCREATED = 1,
 	STATE_CREATED = 2,
 	STATE_CONNECTED = 3,
 	STATE_DESCRIPTOR_ADDED = 4,
 	STATE_CONNECTION_ERROR = 5,
-	STATE_WAIT_TO_RECONNECT = 6
+	STATE_WAIT_TO_RECONNECT = 6,
+	STATE_STOPPING = 7
 } irc_session_state_t;
 
 typedef struct {
 	irc_session_state_t state;
 	irc_session_t * s;
-	char * server;
-	int server_port;
-	char * server_password;
-	char * channel;
-	char * nick;
+
+	server_conf_t * server_conf;
+
 	struct timeval wait_date;
-	char * cmds;
+
 } irc_ctx_t;
 
 typedef struct {
+	irc_conf_t * irc_conf;
 	irc_callbacks_t	callbacks;
+	irc_ctx_t * servers_ctx;
+	int servers_count;
 	struct timeval tv;
 	fd_set in_set, out_set;
 	int maxfd;
-	int stop;
 } irc_common_ctx_t;
 
 void addlog(const char * fmt, ...) {
@@ -112,9 +89,16 @@ void event_connect (irc_session_t * session, const char * event, const char * or
 	printf("Doing connect commands. (TODO)\n");
 	//TODO irc_cmd_msg(session, nick, text);
 
+	int chan_idx;
+	for (chan_idx = 0; chan_idx < server_conf_get_channels_count(ctx->server_conf); chan_idx++) {
+		channel_conf_t * channel_conf = server_conf_get_channel_at(ctx->server_conf, chan_idx);
 
-	printf("Joining %s\n", ctx->channel);
-	irc_cmd_join (session, ctx->channel, 0);
+		const char* chan_name = channel_conf_get_name(channel_conf);
+		const char* chan_pass = channel_conf_get_passwd(channel_conf);
+		printf("Joining %s\n", chan_name);
+
+		irc_cmd_join (session, chan_name, chan_pass);
+	}
 }
 
 
@@ -131,8 +115,8 @@ void event_channel (irc_session_t * session, const char * event, const char * or
 void event_kick (irc_session_t * session, const char * event, const char * origin, const char ** params, unsigned int count)
 {
 	dump_event(session, event, origin, params, count);
-	irc_ctx_t * ctx = (irc_ctx_t *) irc_get_ctx (session);
-	irc_cmd_join (session, ctx->channel, 0);
+//	irc_ctx_t * ctx = (irc_ctx_t *) irc_get_ctx (session);
+//	irc_cmd_join (session, ctx->channel, 0);
 }
 
 void event_numeric (irc_session_t * session, unsigned int event, const char * origin, const char ** params, unsigned int count)
@@ -176,11 +160,11 @@ void initCallbacks(irc_callbacks_t* callbacks) {
 
 typedef int (*sessionActionFunc_t)(irc_common_ctx_t* , irc_ctx_t* );
 
-int doAction(irc_common_ctx_t* common_ctx, irc_ctx_t* ctxs, int count, sessionActionFunc_t sessionActionFunc) {
+int doAction(irc_common_ctx_t* common_ctx, sessionActionFunc_t sessionActionFunc) {
 	int result = 0;
 	int i;
-	for (i = 0; i < count; i++) {
-		int actionResult = sessionActionFunc(common_ctx, &ctxs[i]);
+	for (i = 0; i < common_ctx->servers_count; i++) {
+		int actionResult = sessionActionFunc(common_ctx, &common_ctx->servers_ctx[i]);
 		// We want to process all ctxs even if there is an error.
 		result &= actionResult;
 	}
@@ -189,7 +173,7 @@ int doAction(irc_common_ctx_t* common_ctx, irc_ctx_t* ctxs, int count, sessionAc
 
 int doCreation(irc_common_ctx_t* common_ctx, irc_ctx_t* ctx) {
 	if (ctx->state == STATE_UNCREATED) {
-		printf("Creating session for %s\n", ctx->server);
+		printf("Creating session for %s\n", server_conf_get_name(ctx->server_conf));
 		ctx->s = irc_create_session (&common_ctx->callbacks);
 		if (!ctx->s) {
 			printf("FATAL: Could not create IRC session.\n");
@@ -204,8 +188,13 @@ int doCreation(irc_common_ctx_t* common_ctx, irc_ctx_t* ctx) {
 
 int doConnection(irc_common_ctx_t* common_ctx, irc_ctx_t* ctx) {
 	if (ctx->state == STATE_CREATED) {
-		printf("Connecting to %s:%d\n", ctx->server, ctx->server_port);
-		if (irc_connect(ctx->s, ctx->server, ctx->server_port, ctx->server_password, ctx->nick, 0, 0)) {
+		const char* server_ip = server_conf_get_ip(ctx->server_conf);
+		const int server_port = server_conf_get_port(ctx->server_conf);
+		const char* server_pass = server_conf_get_passwd(ctx->server_conf);
+		const char* server_nick = server_conf_get_nick(ctx->server_conf);
+
+		printf("Connecting to %s:%d\n", server_ip, server_port);
+		if (irc_connect(ctx->s, server_ip, server_port, server_pass, server_nick, 0, 0)) {
 			printf("FATAL: Could not connect: %s\n", irc_strerror(irc_errno(ctx->s)));
 			return 0;
 		}
@@ -234,6 +223,13 @@ int doSelect(irc_common_ctx_t* common_ctx) {
 			if ( errno == EINTR ) {
 				// No, select was just interrupted by a signal.
 				fprintf(stderr, "I");
+				if (g_askedToStop) {
+					int i;
+					for (i = 0; i < common_ctx->servers_count; i++) {
+						common_ctx->servers_ctx[i].state = STATE_STOPPING;
+					}
+					return 0;
+				}
 				continue;
 			}
 			// Yes, get out of here.
@@ -279,7 +275,7 @@ int doDestroy(irc_common_ctx_t* common_ctx, irc_ctx_t* ctx) {
 	if ((ctx->state != STATE_CONNECTED)
 			&& (ctx->state != STATE_UNCREATED)
 			&& (ctx->state != STATE_WAIT_TO_RECONNECT)) {
-		printf("Destroy connection to %s:%d\n", ctx->server, ctx->server_port);
+		printf("Destroy connection to %s\n", server_conf_get_name(ctx->server_conf));
 		irc_destroy_session(ctx->s);
 		ctx->state = STATE_WAIT_TO_RECONNECT;
 	}
@@ -311,42 +307,60 @@ void resetSelectData(irc_common_ctx_t* common_ctx) {
 	FD_ZERO (&common_ctx->out_set);
 }
 
+void SIGINThandler(int sig) {
+	printf("Stopping program.\n");
+	g_askedToStop = 1;
+}
+
 int main (int argc, char **argv) {
 	irc_common_ctx_t common_ctx;
-	irc_ctx_t ctxs[1];
-	int ctxs_count = 1;
-
-	if (argc != 4) {
-		printf("Usage: %s <server> <nick> <channel>\n", argv[0]);
-		return 1;
-	}
 
 	memset (&common_ctx, 0, sizeof(irc_common_ctx_t));
 
 	initCallbacks(&common_ctx.callbacks);
 
-	memset (&ctxs[0], 0, sizeof(irc_ctx_t));
-	ctxs[0].state = STATE_UNCREATED;
-	ctxs[0].server = argv[1];
-	ctxs[0].server_port = 6667;
-	ctxs[0].nick = argv[2];
-	ctxs[0].channel = argv[3];
-	//ctxs[0].cmds = "/msg NickServ IDENTIFY pass";
+	// ----------
 
-	printf("ctxs[0] == %p\n", &ctxs[0]);
+	common_ctx.irc_conf = irc_conf_new();
+	if (!irc_conf_load(common_ctx.irc_conf, "testIrc.conf")) {
+		irc_conf_free(common_ctx.irc_conf);
+		return 1;
+	}
 
-	while (!common_ctx.stop) {
-		doAction(&common_ctx, ctxs, ctxs_count, &doCreation);
-		doAction(&common_ctx, ctxs, ctxs_count, &doConnection);
+	common_ctx.servers_count = irc_conf_get_servers_count(common_ctx.irc_conf);
+	common_ctx.servers_ctx = calloc(common_ctx.servers_count, sizeof(irc_ctx_t));
+
+	int eachServer;
+	for (eachServer = 0; eachServer < common_ctx.servers_count; eachServer++) {
+		irc_ctx_t * irc_ctx = &common_ctx.servers_ctx[eachServer];
+		irc_ctx->state = STATE_UNCREATED;
+		irc_ctx->server_conf = irc_conf_get_server_at(common_ctx.irc_conf, eachServer);
+	}
+
+	// ----------
+
+	signal(SIGINT, SIGINThandler);
+
+	// ----------
+
+	while (!g_askedToStop) {
+		doAction(&common_ctx, &doCreation);
+		doAction(&common_ctx, &doConnection);
 
 		resetSelectData(&common_ctx);
-		doAction(&common_ctx, ctxs, ctxs_count, &doAddDescriptors);
+		doAction(&common_ctx, &doAddDescriptors);
 		doSelect(&common_ctx);
-		doAction(&common_ctx, ctxs, ctxs_count, &doProcessDescriptors);
+		doAction(&common_ctx, &doProcessDescriptors);
 
-		doAction(&common_ctx, ctxs, ctxs_count, &doDestroy);
-		doAction(&common_ctx, ctxs, ctxs_count, &doWait);
+		doAction(&common_ctx, &doDestroy);
+		doAction(&common_ctx, &doWait);
 	}
+
+	irc_conf_free(common_ctx.irc_conf);
+	free(common_ctx.servers_ctx);
+
+	printf("End of program.\n");
 
 	return 0;
 }
+
