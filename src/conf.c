@@ -10,12 +10,26 @@
  */
 
 
+// ---
+
+struct _regex_conf_t {
+    json_t * regex_node;
+    json_t * vars_node;
+};
+
+struct _filter_conf_t {
+    json_t * filter_node;
+    json_t * regexes_node;
+    regex_conf_t current_regex;
+};
+
 struct _channel_conf_t {
 //     char *name;
 //     char *passwd;
 
     json_t * node;
-
+    json_t * filters_node;
+    filter_conf_t current_filter;
 };
 
 struct _cmd_conf_t {
@@ -51,6 +65,41 @@ struct _irc_conf_t {
     server_conf_t current_server;
 };
 
+
+// ----- regex_conf
+
+const char * regex_conf_get_regex(regex_conf_t * regex_conf) {
+    json_t * jValue = json_object_get(regex_conf->regex_node, "regex");
+    return json_string_value(jValue);
+}
+
+int regex_conf_get_vars_count(regex_conf_t * regex_conf) {
+    return json_array_size(regex_conf->vars_node);
+}
+
+const char * regex_conf_get_var_at(regex_conf_t * regex_conf, int index) {
+    json_t * jValue = json_array_get(regex_conf->vars_node, index);
+    return json_string_value(jValue);
+}
+
+// ----- filter_conf
+
+const char * filter_conf_get_name(filter_conf_t * filter_conf) {
+    json_t * jValue = json_object_get(filter_conf->filter_node, "name");
+    return json_string_value(jValue);
+}
+
+int filter_conf_get_regexes_count(filter_conf_t * filter_conf) {
+    return json_array_size(filter_conf->regexes_node);
+}
+
+regex_conf_t * filter_conf_get_regex_at(filter_conf_t * filter_conf, int index) {
+    json_t * regex_node = json_array_get(filter_conf->regexes_node, index);
+    filter_conf->current_regex.regex_node = regex_node;
+    filter_conf->current_regex.vars_node = json_object_get(regex_node, "vars");
+    return &filter_conf->current_regex;
+}
+
 // ----- cmd_conf
 
 const char * cmd_conf_get_name(cmd_conf_t * cmd_conf) {
@@ -82,6 +131,26 @@ const char * channel_conf_get_name(channel_conf_t * channel_conf) {
 const char * channel_conf_get_passwd(channel_conf_t * channel_conf) {
     json_t *jValue = json_object_get(channel_conf->node, "passwd");
     return json_string_value(jValue);
+}
+
+const char * channel_conf_get_nickfilter(channel_conf_t * channel_conf) {
+    json_t *jValue = json_object_get(channel_conf->node, "nickfilter");
+    return json_string_value(jValue);
+}
+
+int channel_conf_get_filters_count(channel_conf_t * channel_conf) {
+    if (!json_is_array(channel_conf->filters_node)) {
+    	fprintf(stderr, "ERROR: filters is not an array.\n");
+        return 0;
+    }
+    return json_array_size(channel_conf->filters_node);
+}
+
+filter_conf_t * channel_conf_get_filter_at(channel_conf_t * channel_conf, int index) {
+	json_t * filter_node = json_array_get(channel_conf->filters_node, index);;
+	channel_conf->current_filter.filter_node = filter_node;
+	channel_conf->current_filter.regexes_node = json_object_get(filter_node, "regexes");
+    return &channel_conf->current_filter;
 }
 
 // -----
@@ -116,12 +185,18 @@ int server_conf_get_channels_count(server_conf_t * server_conf) {
 }
 
 channel_conf_t * server_conf_get_channel_at(server_conf_t * server_conf, int index) {
-    server_conf->current_channel.node = json_array_get(server_conf->channels_node, index);
+	json_t * channel_node = json_array_get(server_conf->channels_node, index);
+    if (!json_is_object(channel_node)) {
+        fprintf(stderr, "ERROR: channels[%d] is not an object.\n", index);
+    }
+    server_conf->current_channel.node = channel_node;
+    server_conf->current_channel.filters_node = json_object_get(channel_node, "filters");
     return &server_conf->current_channel;
 }
 
 int server_conf_get_cmds_count(server_conf_t * server_conf) {
     if (!json_is_array(server_conf->cmds_node)) {
+    	fprintf(stderr, "ERROR: cmds is not an array.\n");
         return 0;
     }
     return json_array_size(server_conf->cmds_node);
@@ -130,7 +205,7 @@ int server_conf_get_cmds_count(server_conf_t * server_conf) {
 cmd_conf_t * server_conf_get_cmd_at(server_conf_t * server_conf, int index) {
     json_t* cmdNode = json_array_get(server_conf->cmds_node, index);
     if (!json_is_object(cmdNode)) {
-        fprintf(stderr, "ERROR: cmdNode is not an object.\n");
+        fprintf(stderr, "ERROR: cmds[%d] is not an object.\n", index);
     }
     server_conf->current_cmd.node = cmdNode;
     return &server_conf->current_cmd;

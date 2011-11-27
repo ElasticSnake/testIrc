@@ -63,6 +63,78 @@ void addlog(const char * fmt, ...) {
 	printf("%s\n", buf);
 }
 
+int regex_conf_compile(regex_conf_t* regex_conf, regex_t * regex) {
+    const char * regex_str = regex_conf_get_regex(regex_conf);
+    int result = regcomp(regex, regex_str, REG_EXTENDED | REG_ICASE);
+    if (result)
+    {
+        char buf[512];
+        regerror(result, regex, buf, sizeof(buf));
+        fprintf(stderr, "Invalid regular expression: %s", buf);
+        regfree(regex);
+        return 0;
+    } else {
+        printf("Compilation ok : %s => %p\n", regex_str, regex);
+    }
+    return 1;
+}
+
+int match_filter(const char** lines, int lines_count, filter_conf_t * filter_conf) {
+    int regexes_count = filter_conf_get_regexes_count(filter_conf);
+    if (lines_count < regexes_count) {
+        printf("No match, not enough lines.\n");
+        return 0;
+    }
+
+    int i;
+    for (i = 0; i < lines_count && i < regexes_count; i++) {
+        regex_conf_t * regex_conf = filter_conf_get_regex_at(filter_conf, i);
+        regex_t regex;
+        if (!regex_conf_compile(regex_conf, &regex)) {
+            return 0;
+        }
+
+        if (regex_conf_get_vars_count(regex_conf) != regex.re_nsub) {
+            printf("Wrong number of variable, re: %d, vars: %d\n", regex.re_nsub,
+                regex_conf_get_vars_count(regex_conf));
+            regfree(&regex);
+            return 0;
+        }
+
+
+        size_t ngroups = regex.re_nsub + 1;
+        regmatch_t *groups = malloc(ngroups * sizeof(regmatch_t));
+
+        printf("matching line %d : %s with %s, ngroups = %d, regex = %p\n",
+            i, lines[i], regex_conf_get_regex(regex_conf), ngroups, &regex);
+
+        int result = regexec(&regex, lines[i], ngroups, groups, 0);
+        if (!result)
+        {
+            printf("line %d match -> %s\n", i, lines[i]);
+            int j;
+            for (j = 1; j <= regex.re_nsub; j++)
+            {
+                if (groups[j].rm_so != -1)
+                {
+                    printf("subgroup %2d from %2d to %2d: \"%.*s\", var = %s\n", j, groups[j].rm_so,
+                            groups[j].rm_eo, groups[j].rm_eo - groups[j].rm_so, lines[i]
+                            + groups[j].rm_so, regex_conf_get_var_at(regex_conf, j - 1));
+                }
+
+            }
+        } else {
+            printf("No match, line %d : %s != %s\n", i, lines[i], regex_conf_get_regex(regex_conf));
+            free(groups);
+            regfree(&regex);
+            return 0;
+        }
+        free(groups);
+        regfree(&regex);
+    }
+    return 1;
+}
+
 void dump_event (irc_session_t * session, const char * event, const char * origin, const char ** params, unsigned int count)
 {
 	char buf[512];
@@ -118,10 +190,42 @@ void event_connect (irc_session_t * session, const char * event, const char * or
 
 void event_channel (irc_session_t * session, const char * event, const char * origin, const char ** params, unsigned int count)
 {
-	//dump_event(session, event, origin, params, count);
-
-	if ( count != 2 )
+	if (count != 2) {
 		return;
+	}
+
+	if (!origin) {
+		fprintf(stderr, "WARN: No origin for following event:");
+		dump_event(session, event, origin, params, count);
+		return;
+	}
+
+	irc_ctx_t * ctx = (irc_ctx_t *) irc_get_ctx (session);
+
+	int chan_idx;
+	for (chan_idx = 0; chan_idx < server_conf_get_channels_count(ctx->server_conf); chan_idx++) {
+		channel_conf_t * channel_conf = server_conf_get_channel_at(ctx->server_conf, chan_idx);
+
+		const char* chan_name = channel_conf_get_name(channel_conf);
+		if (!strcmp(chan_name, params[0])) {
+			const char* nickfilter = channel_conf_get_nickfilter(channel_conf);
+			if (nickfilter) {
+				if(!strcmp(nickfilter, origin)) {
+					// match filters on channel history
+
+					int filters_count = channel_conf_get_filters_count(channel_conf);
+					int filter_idx;
+					printf("filters_count = %d\n", filters_count);
+				    for (filter_idx = 0; filter_idx < filters_count; filter_idx++) {
+				        filter_conf_t * filter_conf = channel_conf_get_filter_at(channel_conf, filter_idx);
+				        match_filter(&params[1], 1, filter_conf);
+				    }
+				}
+			} else {
+				// match filters on channel history
+			}
+		}
+	}
 
 	printf ("%s:%s: %s\n", origin ? origin : "someone", params[0], params[1] );
 }
@@ -256,7 +360,7 @@ int doSelect(irc_common_ctx_t* common_ctx) {
 
 		// Everything OK.
 
-	} while(0);
+	} while(0); // to be able to use "continue" when interrupted
 
 	return 1;
 }

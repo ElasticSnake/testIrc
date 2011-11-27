@@ -2,11 +2,29 @@
 #define CONF_H_
 
 // Use opaque pointer : http://en.wikipedia.org/wiki/Opaque_pointer
+typedef struct _regex_conf_t regex_conf_t;
+typedef struct _filter_conf_t filter_conf_t;
 typedef struct _cmd_conf_t cmd_conf_t;
 typedef struct _channel_conf_t channel_conf_t;
 typedef struct _server_conf_t server_conf_t;
 typedef struct _irc_conf_t irc_conf_t;
 
+
+// ----- regex_conf
+
+const char * regex_conf_get_regex(regex_conf_t * regex_conf);
+
+int regex_conf_get_vars_count(regex_conf_t * regex_conf);
+
+const char * regex_conf_get_var_at(regex_conf_t * regex_conf, int index);
+
+// ----- filter_conf
+
+const char * filter_conf_get_name(filter_conf_t * filter_conf);
+
+int filter_conf_get_regexes_count(filter_conf_t * filter_conf);
+
+regex_conf_t * filter_conf_get_regex_at(filter_conf_t * filter_conf, int index);
 
 // ---- cmd_conf
 
@@ -21,6 +39,12 @@ const char * cmd_conf_get_arg2(cmd_conf_t * cmd_conf);
 const char * channel_conf_get_name(channel_conf_t * channel_conf);
 
 const char * channel_conf_get_passwd(channel_conf_t * channel_conf);
+
+const char * channel_conf_get_nickfilter(channel_conf_t * channel_conf);
+
+int channel_conf_get_filters_count(channel_conf_t * channel_conf);
+
+filter_conf_t * channel_conf_get_filter_at(channel_conf_t * channel_conf, int index);
 
 // ----- server_conf
 
